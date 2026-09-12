@@ -169,3 +169,20 @@ can happen under Docker's restart policy. Subprocess tests verify both forced
 exit on a simulated stall and cancellation of the timer after successful work.
 These observations do not establish a fixed chapter-preparation time under shared
 GPU load, and a named tunnel does not remove Cloudflare's request-duration limits.
+
+A previously undownloaded 16-page chapter was enqueued using Suwayomi's native
+`POST /api/v1/download/batch`, without a translator enqueue request. The watcher
+automatically discovered its completed download, prepared all 16 pages (70
+translated regions), and published a valid CBZ. Every Suwayomi reader response
+matched its corresponding translated CBZ page byte-for-byte. Native exported
+original entries remained identical to the retained source archive. The 16
+prepared reads took 0.024–0.046 seconds (median 0.037 seconds), with no new
+inference or page-cache job changes. This end-to-end trial included the stalls,
+retries and maintenance pauses described above; it is not an isolated throughput
+benchmark.
+
+A disposable container running the production worker image was also given a
+simulated stalled inference and a short watchdog deadline. It exited with code
+70, Docker restarted it once as configured, and the second timeout also exited
+70. The test container was removed afterward; it did not load GPU models or touch
+chapter data.
