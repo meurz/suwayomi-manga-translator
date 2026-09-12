@@ -1,0 +1,1 @@
+"""Suwayomi image translation integration."""

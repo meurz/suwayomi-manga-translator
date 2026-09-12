@@ -1,0 +1,45 @@
+services:
+  worker:
+    image: suwayomi-translator-worker:0.1.0
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.worker
+    env_file: worker.env
+    environment:
+      TORCH_THREADS: '2'
+      OMP_NUM_THREADS: '2'
+      OPENBLAS_NUM_THREADS: '2'
+      MODEL_DIR: /opt/mit/models
+    volumes:
+      - ./models:/opt/mit/models
+    mem_limit: 4608m
+    cpus: 3
+    restart: unless-stopped
+    networks: [translation]
+  gateway:
+    image: suwayomi-translator:0.1.0
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    env_file: gateway.env
+    environment:
+      WORKER_URL: http://worker:8001
+      DATA_DIR: /data
+      MAX_PENDING: '8'
+      READER_WAIT: '80'
+    volumes:
+      - ./data:/data
+    ports:
+      - '127.0.0.1:18440:8000'
+    mem_limit: 384m
+    cpus: 1
+    restart: unless-stopped
+    networks:
+      translation: {}
+      reader:
+        aliases: [suwayomi-translator]
+networks:
+  translation: {}
+  reader:
+    external: true
+    name: ${SUWAYOMI_NETWORK:-coolify}

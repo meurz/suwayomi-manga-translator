@@ -1,0 +1,23 @@
+FROM python:3.11-slim-bookworm
+ARG MIT_REV=95227a2bb0fd306cd4f0c104d57284026f991b3a
+ENV PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1 OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 MKL_NUM_THREADS=2 HF_HUB_DISABLE_TELEMETRY=1
+RUN apt-get update && apt-get install -y --no-install-recommends git build-essential libglib2.0-0 libgl1 libgomp1 fonts-noto-cjk && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir uv
+WORKDIR /opt/mit
+RUN git init && git remote add origin https://github.com/zyddnys/manga-image-translator.git && git fetch --depth 1 origin ${MIT_REV} && git checkout --detach FETCH_HEAD
+# The optional Rust Paddle detector has no supported wheel on all CPU targets.
+# This deployment uses the upstream PyTorch detector and OCR instead.
+RUN python - <<'PY'
+from pathlib import Path
+p = Path('manga_translator/detection/__init__.py')
+s = p.read_text().replace('from .paddle_rust import PaddleDetector', '')
+s = s.replace('    Detector.paddle: PaddleDetector,', '')
+p.write_text(s)
+PY
+COPY deploy/requirements-worker.lock /tmp/requirements-worker.txt
+RUN uv pip install --system --no-cache -r /tmp/requirements-worker.txt
+COPY src /app/src
+COPY scripts /app/scripts
+ENV PYTHONPATH=/app/src:/opt/mit
+RUN python -c "from manga_translator import MangaTranslator; from manga_translator.config import Config"
+CMD ["python", "-m", "uvicorn", "suwayomi_translator.worker:app", "--host", "0.0.0.0", "--port", "8001", "--no-access-log"]
