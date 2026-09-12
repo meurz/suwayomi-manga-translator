@@ -41,15 +41,18 @@ class Handler(BaseHTTPRequestHandler):
         try:
             connection.request(self.command, "/admin" + self.path, body=data, headers=headers)
             response = connection.getresponse()
-            body = response.read()
             self.send_response(response.status)
             self.send_header(
                 "Content-Type", response.getheader("Content-Type", "application/octet-stream")
             )
-            self.send_header("Content-Length", str(len(body)))
+            for name in ("Content-Length", "Content-Disposition"):
+                value = response.getheader(name)
+                if value:
+                    self.send_header(name, value)
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
-            self.wfile.write(body)
+            while chunk := response.read(128 * 1024):
+                self.wfile.write(chunk)
         finally:
             connection.close()
 

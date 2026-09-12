@@ -17,7 +17,7 @@ services:
     restart: unless-stopped
     networks: [translation]
   gateway:
-    image: suwayomi-translator:0.2.0
+    image: suwayomi-translator:0.3.0
     build:
       context: .
       dockerfile: deploy/Dockerfile
@@ -25,13 +25,15 @@ services:
     environment:
       WORKER_URL: ${WORKER_URL:-http://worker:8001}
       DATA_DIR: /data
+      SUWAYOMI_URL: ${SUWAYOMI_URL:-http://suwayomi:4567}
+      TRANSLATION_MODE: chapters
       MAX_PENDING: '8'
       READER_WAIT: '80'
     volumes:
       - ./data:/data
     ports:
       - '127.0.0.1:18440:8000'
-    mem_limit: 384m
+    mem_limit: 768m
     cpus: 1
     restart: unless-stopped
     networks:
