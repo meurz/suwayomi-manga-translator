@@ -69,7 +69,11 @@ uncertain and text-free pages retain their original bytes. Cancel finishes the
 current page and stops further translation; it does not cancel Suwayomi downloads.
 Pause also takes effect between pages. Successful pages survive retries/restarts.
 Worker/network outages wait and retry every 60 seconds; other processing errors
-retry three times before requiring manual retry. Native download waits time out
+retry three times before requiring manual retry. The worker exits if a single
+inference exceeds 300 seconds (`WORKER_PAGE_TIMEOUT`); Docker's restart policy
+recycles it, and chapter processing resumes from its last verified page. Direct
+non-Docker deployments must use a process supervisor for this recovery. A tunnel
+can still time out earlier; these pages remain pending instead of being published. Native download waits time out
 after 30 minutes, with a message to check Suwayomi's download queue.
 
 Chapter storage is durable and separate from the disposable page cache: default
@@ -94,7 +98,8 @@ services:
 ```
 
 **Upgrade from v0.2.0:** rebuild/recreate the gateway with its Suwayomi API URL;
-the existing worker and model configuration remain compatible. Chapter mode is
+the existing worker and model configuration remain compatible. Upgrade the worker
+as well to enable automatic recovery from stuck GPU inference. Chapter mode is
 the new default. The first successful scan only records existing downloads.
 Use the online-fallback checkbox to opt back into on-demand page processing.
 

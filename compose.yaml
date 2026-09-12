@@ -1,6 +1,6 @@
 services:
   worker:
-    image: suwayomi-translator-worker:0.2.0
+    image: suwayomi-translator-worker:0.3.0
     build:
       context: .
       dockerfile: deploy/Dockerfile.worker

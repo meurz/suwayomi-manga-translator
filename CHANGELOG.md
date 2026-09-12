@@ -2,6 +2,7 @@
 
 ## 0.3.0
 
+- Recycle stalled inference workers after a configurable deadline, preserving gateway checkpoints.
 - Make ahead-of-reading chapter preparation the default workflow.
 - Watch new completed Suwayomi downloads; provide manual backfill and manga chapter selection.
 - Preserve originals, resume successful pages, and publish only fully verified chapters.

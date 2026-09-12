@@ -44,7 +44,7 @@ stream encoding. CPU OCR and inpainting are substantial parts of the latency.
 
 ## Deterministic checks
 
-33 tests cover request deduplication, content/config cache keys, exact skipped
+35 tests cover request deduplication, content/config cache keys, exact skipped
 bytes, Chinese/uncertain region filtering, missing/duplicate LLM IDs, worker
 failure, HTML masquerading as an image, authentication, pause, background
 completion after a response deadline, restart recovery, cache eviction, valid
@@ -158,3 +158,14 @@ resuming successful pages after a failure, cancelling during inference, corrupt
 page and CBZ detection, restart recovery, worker-offline waiting without exhausting
 retries, unsafe Local archive paths, archive limits, profile changes, and the real
 gateway callback refusing a failed worker's reader fallback as chapter success.
+
+
+During the native-download trial, transient GPU stalls exceeded Cloudflare's
+request timeout and returned HTTP 524. The chapter remained incomplete and kept
+its verified pages. One retry recovered; a later GPU synchronization stall needed
+a worker restart, after which the same chapter resumed from its saved checkpoint.
+The worker now has a configurable 300-second inference deadline so this recovery
+can happen under Docker's restart policy. Subprocess tests verify both forced
+exit on a simulated stall and cancellation of the timer after successful work.
+These observations do not establish a fixed chapter-preparation time under shared
+GPU load, and a named tunnel does not remove Cloudflare's request-duration limits.
