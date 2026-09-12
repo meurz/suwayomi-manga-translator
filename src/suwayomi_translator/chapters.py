@@ -321,7 +321,11 @@ class ChapterManager:
         if not 0 < chapter["pageCount"] <= PAGE_COUNT_LIMIT:
             raise ValueError("Chapter has an invalid or unsupported page count")
         self.update(
-            chapter_id, status="fetching", metadata=json.dumps(chapter), total=chapter["pageCount"]
+            chapter_id,
+            status="fetching",
+            error="",
+            metadata=json.dumps(chapter),
+            total=chapter["pageCount"],
         )
         original = await self.acquire(chapter, folder)
         names = await asyncio.to_thread(page_entries, original, chapter["pageCount"])
