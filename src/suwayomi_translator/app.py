@@ -21,7 +21,7 @@ from . import pngstream
 
 Image.MAX_IMAGE_PIXELS = 24_000_000
 MAX_BYTES = 25 * 1024 * 1024
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 
 class Store:
@@ -158,6 +158,7 @@ def create_app(root=None, worker_url=None):
                 r = await app.state.client.post(
                     worker_url + "/process",
                     params={"force": str(force).lower()},
+                    headers={"X-Worker-Token": os.getenv("WORKER_TOKEN", "")},
                     files={"image": ("page", data, store().get(key)["mime"])},
                 )
                 if r.status_code != 200:

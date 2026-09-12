@@ -7,7 +7,7 @@ The service uses [manga-image-translator](https://github.com/zyddnys/manga-image
 for detection, OCR, inpainting and typesetting, and a configurable LLM for
 language decisions and translation into Simplified Chinese.
 
-**Preview:** Linux ARM64 CPU deployment. First-time translation takes time;
+**Preview:** Linux ARM64 CPU and WSL2 NVIDIA GPU deployments. First-time translation takes time;
 previously processed pages are served from disk. Chinese and uncertain regions
 are excluded before erasing. OCR and language identification are imperfect.
 
@@ -17,14 +17,14 @@ are excluded before erasing. OCR and language identification are imperfect.
 - Region-level Chinese/uncertain-text skipping and original-image fallback.
 - Content-addressed cache, duplicate-request coalescing, bounded queue and retries.
 - A small management page: enable/pause, upload a test page, inspect jobs and compare images.
-- Separate gateway and CPU worker containers, with CPU and memory limits.
+- Separate gateway and CPU/CUDA worker containers, with CPU and memory limits.
 - Streaming PNG responses for slow pages, keeping Suwayomi's 30-second idle read timeout alive.
 
 ```mermaid
 flowchart LR
   Reader --> Suwayomi
   Suwayomi --> Gateway[Translation gateway: cache and queue]
-  Gateway --> Worker[manga-image-translator CPU worker]
+  Gateway --> Worker[manga-image-translator CPU or CUDA worker]
   Worker --> LLM[Configured translation API]
   Worker --> Gateway
   Gateway --> Suwayomi
@@ -39,7 +39,7 @@ chapter pretranslation. Existing browser/reader caches may need refreshing.
 Requires Docker Compose, approximately 5 GB available RAM for the configured worker
 limit, disk space for the build, models and cache, and a working translation API.
 The worker image is built on your ARM machine; no emulation is needed.
-Other architectures and GPU deployments have not been validated in this preview.
+For a remote NVIDIA worker, see the GPU instructions below.
 
 ```sh
 git clone https://github.com/meurz/suwayomi-manga-translator.git
@@ -64,6 +64,60 @@ the upstream PyTorch detector, 48px OCR and LaMa MPE inpainter are used.
 No API credentials belong in the repository or image. `worker.env` and
 `gateway.env` are ignored by Git and Docker build contexts. Model changes also
 require a new `CACHE_PROFILE` in `gateway.env`, preventing stale translations.
+
+## Remote NVIDIA GPU worker (including WSL2)
+
+Keep the gateway next to Suwayomi and run only the image worker on the GPU host.
+Requires Docker Compose with GPU support, NVIDIA Container Toolkit and a working
+`nvidia-smi`. The x86_64 worker installs CUDA-enabled PyTorch from the dependency
+lock; ARM64 remains the CPU deployment described above.
+
+On the GPU host:
+
+```sh
+python3 scripts/init_config.py
+# Configure the translation API in worker.env.
+docker compose -f compose.gpu.yaml build
+docker compose -f compose.gpu.yaml run --rm worker python /app/scripts/warm_models.py
+docker compose -f compose.gpu.yaml up -d
+curl http://127.0.0.1:18442/health
+# Must report device=cuda and ok=true; unavailable CUDA does not silently fall back.
+
+# On WSL2, explicitly allow its DirectX GPU device:
+docker compose -f compose.gpu.yaml -f compose.wsl.yaml up -d
+
+# Temporary connectivity test, with cloudflared installed:
+cloudflared tunnel --url http://127.0.0.1:18442 --protocol quic
+```
+
+The worker processes one page at a time and binds only to loopback. All routes
+except health require `X-Worker-Token`; do not remove this authentication when
+publishing a tunnel. Copy only the matching `WORKER_TOKEN` into the ARM gateway's
+`gateway.env`, using a protected channel. Keep both env files mode 0600.
+
+On the gateway host, set `WORKER_URL=https://YOUR-WORKER-HOSTNAME` in the Compose
+`.env` file (the URL is not a secret), then recreate only the gateway:
+
+```sh
+docker compose up -d --no-deps gateway
+```
+
+Use a new `CACHE_PROFILE` when benchmarking an uncached GPU result. Existing
+cache entries otherwise bypass inference and cannot measure GPU performance.
+Quick Tunnel addresses are temporary; after verifying connectivity, configure a
+named Cloudflare Tunnel with a stable hostname targeting `http://127.0.0.1:18442`.
+The gateway sends the worker token over HTTPS. A remote worker receives page images;
+the translation API still receives only OCR text.
+
+The GPU host, Docker and tunnel must remain running. WSL/Windows sleep or tunnel
+failure makes uncached pages fall back to originals; already cached pages still
+work. To return to the local CPU worker, remove the `WORKER_URL` override and
+recreate the gateway. Ensure its worker token matches the CPU worker too.
+
+**Upgrade from v0.1.0:** worker authentication is now required. Run
+`scripts/init_config.py` to add a shared token to existing local env files, then
+recreate both services. For hosts with separate env files, distribute the same
+token explicitly before switching the gateway.
 
 ## Connect Suwayomi
 
