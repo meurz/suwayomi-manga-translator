@@ -33,6 +33,23 @@ def backend(app, handler):
     app.state.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
+async def test_gateway_authenticates_to_remote_worker(setup, monkeypatch):
+    app, client, _ = setup
+    monkeypatch.setenv("WORKER_TOKEN", "test-worker")
+
+    def worker(request):
+        assert request.headers["x-worker-token"] == "test-worker"
+        assert "x-admin-token" not in request.headers
+        assert "x-processor-token" not in request.headers
+        return httpx.Response(200, content=png(), headers={"X-Outcome": "skipped"})
+
+    backend(app, worker)
+    r = await client.post(
+        "/convert", headers={"X-Processor-Token": "test-processor"}, files={"image": png()}
+    )
+    assert r.headers["x-outcome"] == "skipped"
+
+
 async def test_deduplicates_concurrent_pages_and_caches(setup):
     app, client, root = setup
     calls = 0

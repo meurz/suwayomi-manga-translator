@@ -1,0 +1,5 @@
+services:
+  worker:
+    # WSL's DirectX GPU device must also be allowed by the container device cgroup.
+    devices:
+      - /dev/dxg:/dev/dxg

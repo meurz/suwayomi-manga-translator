@@ -1,7 +1,7 @@
 FROM python:3.11-slim-bookworm
 ARG MIT_REV=95227a2bb0fd306cd4f0c104d57284026f991b3a
 ENV PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1 OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 MKL_NUM_THREADS=2 HF_HUB_DISABLE_TELEMETRY=1
-RUN apt-get update && apt-get install -y --no-install-recommends git build-essential libglib2.0-0 libgl1 libgomp1 fonts-noto-cjk && rm -rf /var/lib/apt/lists/*
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources && apt-get update && apt-get install -y --no-install-recommends git build-essential libglib2.0-0 libgl1 libgomp1 fonts-noto-cjk && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir uv
 WORKDIR /opt/mit
 RUN git init && git remote add origin https://github.com/zyddnys/manga-image-translator.git && git fetch --depth 1 origin ${MIT_REV} && git checkout --detach FETCH_HEAD

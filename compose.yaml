@@ -1,6 +1,6 @@
 services:
   worker:
-    image: suwayomi-translator-worker:0.1.0
+    image: suwayomi-translator-worker:0.2.0
     build:
       context: .
       dockerfile: deploy/Dockerfile.worker
@@ -17,13 +17,13 @@ services:
     restart: unless-stopped
     networks: [translation]
   gateway:
-    image: suwayomi-translator:0.1.0
+    image: suwayomi-translator:0.2.0
     build:
       context: .
       dockerfile: deploy/Dockerfile
     env_file: gateway.env
     environment:
-      WORKER_URL: http://worker:8001
+      WORKER_URL: ${WORKER_URL:-http://worker:8001}
       DATA_DIR: /data
       MAX_PENDING: '8'
       READER_WAIT: '80'

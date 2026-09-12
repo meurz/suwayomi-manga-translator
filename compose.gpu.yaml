@@ -1,0 +1,19 @@
+services:
+  worker:
+    image: suwayomi-translator-worker:0.2.0-gpu
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.worker
+    env_file: worker.env
+    environment:
+      WORKER_DEVICE: cuda
+      TORCH_THREADS: '2'
+      MODEL_DIR: /opt/mit/models
+    gpus: all
+    volumes:
+      - ./models:/opt/mit/models
+    ports:
+      - '127.0.0.1:18442:8001'
+    mem_limit: 6g
+    cpus: 4
+    restart: unless-stopped

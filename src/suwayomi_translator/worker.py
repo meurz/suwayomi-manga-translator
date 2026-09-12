@@ -1,14 +1,15 @@
-"""CPU inference worker, isolated from the responsive gateway process."""
+"""CPU or CUDA inference worker, isolated from the responsive gateway process."""
 
 import asyncio
 import io
 import logging
 import os
+import secrets
 import threading
 import time
 
 from fastapi import FastAPI, HTTPException, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from PIL import Image
 
 from .provider import should_translate, translate_regions
@@ -19,6 +20,23 @@ _pipeline = None
 Image.MAX_IMAGE_PIXELS = 24_000_000
 
 
+@app.middleware("http")
+async def authenticate(request, call_next):
+    if request.url.path != "/health":
+        expected = os.getenv("WORKER_TOKEN", "")
+        received = request.headers.get("x-worker-token", "")
+        if not expected or not secrets.compare_digest(received, expected):
+            return JSONResponse({"detail": "Authentication required"}, status_code=401)
+    return await call_next(request)
+
+
+def device():
+    value = os.getenv("WORKER_DEVICE", "cpu").lower()
+    if value not in {"cpu", "cuda"}:
+        raise ValueError("WORKER_DEVICE must be cpu or cuda")
+    return value
+
+
 def pipeline():
     global _pipeline
     if _pipeline is not None:
@@ -26,6 +44,8 @@ def pipeline():
     import torch
     from manga_translator import MangaTranslator
 
+    if device() == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA was requested but is not available")
     torch.set_num_threads(int(os.getenv("TORCH_THREADS", "2")))
     torch.set_num_interop_threads(1)
 
@@ -76,7 +96,7 @@ def pipeline():
 
     _pipeline = ReaderTranslator(
         {
-            "use_gpu": False,
+            "use_gpu": device() == "cuda",
             "kernel_size": 3,
             "verbose": False,
             "ignore_errors": False,
@@ -89,7 +109,13 @@ def pipeline():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "engine": "manga-image-translator", "device": "cpu"}
+    import torch
+
+    ready = device() == "cpu" or torch.cuda.is_available()
+    return JSONResponse(
+        {"ok": ready, "engine": "manga-image-translator", "device": device()},
+        status_code=200 if ready else 503,
+    )
 
 
 @app.post("/process")

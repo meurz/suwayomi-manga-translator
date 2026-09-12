@@ -44,11 +44,63 @@ stream encoding. CPU OCR and inpainting are substantial parts of the latency.
 
 ## Deterministic checks
 
-14 tests cover request deduplication, content/config cache keys, exact skipped
+18 tests cover request deduplication, content/config cache keys, exact skipped
 bytes, Chinese/uncertain region filtering, missing/duplicate LLM IDs, worker
 failure, HTML masquerading as an image, authentication, pause, background
 completion after a response deadline, restart recovery, cache eviction, valid
-streamed PNGs, pixel-preserving fallback and page-edge rendering.
+streamed PNGs, pixel-preserving fallback and page-edge rendering. Remote-worker
+authentication, explicit device selection and safe credential migration are
+also covered.
+
+## WSL2 GPU trial
+
+The same 1487 × 2048 Japanese page was tested on an NVIDIA GeForce RTX 3070
+Laptop GPU (8 GiB), CUDA-enabled PyTorch 2.5.1+cu124, with 2 PyTorch threads,
+4 CPU cores and a 6 GiB container memory limit. Detection remained 1024 pixels,
+LaMa MPE repair remained 768 pixels/FP32, and the translation model was unchanged.
+The WSL container needed explicit `/dev/dxg` device access; CUDA readiness was
+verified inside the container. No host-wide NVIDIA configuration was changed.
+
+| Measurement | Observed time |
+| --- | --- |
+| Direct WSL worker, first request after startup | 21.649 s |
+| Direct WSL worker, two subsequent uncached requests | 15.945 / 14.621 s |
+| ARM → HTTP/2 Quick Tunnel → WSL worker, no gateway queue | 34.069 / 30.973 s |
+| ARM → QUIC Quick Tunnel → WSL worker, no gateway queue | 19.347 / 18.213 s |
+| Suwayomi reader over initial HTTP/2 tunnel, uncached | 34.016 s |
+| Suwayomi reader over selected QUIC tunnel, two uncached retries | 19.295 / 18.266 s |
+| Suwayomi repeat from gateway cache on final deployment | 0.155 s |
+
+All these Japanese requests produced 14 translated regions. In the QUIC runs,
+worker time was 14.940 / 15.150 s and total transport overhead was 4.407 / 3.063 s.
+HTTP/2 overhead was 11–13 s on the tested connection. The tunnels connected to
+different Cloudflare edge locations, so the comparison includes routing effects
+and is not proof that QUIC alone will always produce this improvement.
+
+A representative warm local run used about 0.4 s for detection, 0.8 s for OCR,
+1.1 s for text merging, 10.5 s for the translation API, 0.3 s for mask generation,
+0.2 s for inpainting and 0.3 s for rendering. The cloud translation API is now
+the largest variable. Total observed GPU memory peaked at 6142 MiB including
+the Windows desktop and other GPU use (about 3.7 GiB before the worker).
+
+The fully translated manga, generated Chinese fixture and blank page were
+resubmitted to the GPU worker: all returned `skipped`, zero translated regions
+and the exact original file bytes. Output was visually inspected; small-bubble
+residual marks and awkward wrapping remain. Parallel reader traffic was also
+observed: queued page latency can substantially exceed the isolated numbers
+above. One queued HTTP/2 reader retry took 53.234 s. This remains one inference
+job at a time, not a chapter-throughput benchmark.
+
+Worker `/process` rejected unauthenticated public tunnel requests. The gateway
+remained on ARM, with its existing authenticated management route and disk cache.
+Cloudflare Quick Tunnel connectivity was verified; a named tunnel requires
+appropriate credentials for the domain's Cloudflare account.
+
+The final reader retries used the original sample's current cache key, explicitly
+invalidated its result through the authenticated retry endpoint, and timed from
+retry submission through receipt of a fully decoded Suwayomi image. Neighboring
+pages were already cached and the queue started empty. Both produced 14 regions;
+this does not claim the same latency for a cold multi-page chapter queue.
 
 ## Test material
 
@@ -64,8 +116,9 @@ streamed PNGs, pixel-preserving fallback and page-edge rendering.
 
 ## Remaining limits
 
-This is a single-user trial, not a multi-user load test. There is no GPU/AMD64
-validation, no automatic chapter pretranslation and no per-book routing yet.
+This is a small deployment trial, not a controlled multi-user load test. ARM64
+CPU and WSL2 AMD64/NVIDIA inference were verified; other GPU platforms were not.
+There is no automatic chapter pretranslation or per-book routing yet.
 The existing Suwayomi source's own availability is outside this integration.
 Browser/reader caches can retain original fallbacks; refresh them after background
 translation finishes. OCR, Chinese/Japanese language ambiguity, long text and
