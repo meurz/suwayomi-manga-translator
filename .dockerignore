@@ -1,0 +1,10 @@
+.git
+.venv
+experiments
+data
+models
+upstream
+*.log
+.env
+worker.env
+gateway.env

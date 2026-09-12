@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+data/
+models/
+experiments/
+upstream/
+*.log
+worker.env
+gateway.env
