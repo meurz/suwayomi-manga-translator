@@ -51,3 +51,25 @@ def test_config_upgrade_preserves_api_credentials_and_worker_token(tmp_path):
     assert second.returncode == 0 and before == (worker.read_bytes(), gateway.read_bytes())
     assert b"existing-private-key" not in first.stdout + second.stdout
     assert worker.stat().st_mode & 0o777 == gateway.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("blocked,expected", [(True, 70), (False, 0)])
+def test_inference_watchdog_recycles_stalls_but_cancels_after_success(blocked, expected):
+    import os
+    import subprocess
+    import sys
+
+    code = (
+        "import time\nfrom suwayomi_translator.worker import inference_deadline\n"
+        f"with inference_deadline():\n    time.sleep({1 if blocked else 0})\n"
+        "time.sleep(0.2)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        env={**os.environ, "WORKER_PAGE_TIMEOUT": "0.1"},
+        capture_output=True,
+        timeout=10,
+    )
+    assert result.returncode == expected
+    if blocked:
+        assert b"Inference deadline exceeded" in result.stderr

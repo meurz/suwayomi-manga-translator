@@ -44,7 +44,7 @@ stream encoding. CPU OCR and inpainting are substantial parts of the latency.
 
 ## Deterministic checks
 
-18 tests cover request deduplication, content/config cache keys, exact skipped
+35 tests cover request deduplication, content/config cache keys, exact skipped
 bytes, Chinese/uncertain region filtering, missing/duplicate LLM IDs, worker
 failure, HTML masquerading as an image, authentication, pause, background
 completion after a response deadline, restart recovery, cache eviction, valid
@@ -118,7 +118,7 @@ this does not claim the same latency for a cold multi-page chapter queue.
 
 This is a small deployment trial, not a controlled multi-user load test. ARM64
 CPU and WSL2 AMD64/NVIDIA inference were verified; other GPU platforms were not.
-There is no automatic chapter pretranslation or per-book routing yet.
+Chapter pretranslation is available from v0.3.0; per-book translation rules are not implemented.
 The existing Suwayomi source's own availability is outside this integration.
 Browser/reader caches can retain original fallbacks; refresh them after background
 translation finishes. OCR, Chinese/Japanese language ambiguity, long text and
@@ -129,3 +129,60 @@ original RGB pixels: both were identical. The completed 14-region Chinese manga
 result was then submitted as a new page: all regions were skipped (41.251 s,
 zero translated regions), confirming skip behavior on a full illustrated page
 as well as the generated text fixture.
+
+
+## Ahead-of-reading chapters (v0.3.0)
+
+The ARM gateway was upgraded to chapter mode with a read-only Local source mount.
+The existing three-page Japanese/Chinese/blank test chapter reached ready using
+existing page-cache results, and its complete translated CBZ passed image/CRC
+verification. This run measures preparation and durable publication, not uncached
+inference throughput.
+
+The GPU worker was then actually stopped. Suwayomi's three reader image requests
+still returned bytes matching the prepared CBZ; the Japanese page took 0.155 s,
+the Chinese page 0.029 s and the blank page 0.027 s. Chinese/blank bytes matched
+the originals. No new page job, inference or cache-hit update was recorded.
+The complete translated CBZ remained exportable. The GPU worker was restarted
+and its health endpoint confirmed CUDA readiness afterward.
+
+The management page was exercised in Chromium at desktop and 390-pixel mobile
+widths: manga URL parsing, chapter selection, select-all, pause/resume and chapter
+status updates worked, with no JavaScript errors or horizontal page overflow.
+The preview endpoint remained loopback-only; the public management entry retained
+its existing authentication gateway.
+
+Deterministic chapter tests additionally cover baseline/manual versus new/auto
+downloads, native download waiting and deadlines, partial-publication prevention,
+resuming successful pages after a failure, cancelling during inference, corrupt
+page and CBZ detection, restart recovery, worker-offline waiting without exhausting
+retries, unsafe Local archive paths, archive limits, profile changes, and the real
+gateway callback refusing a failed worker's reader fallback as chapter success.
+
+
+During the native-download trial, transient GPU stalls exceeded Cloudflare's
+request timeout and returned HTTP 524. The chapter remained incomplete and kept
+its verified pages. One retry recovered; a later GPU synchronization stall needed
+a worker restart, after which the same chapter resumed from its saved checkpoint.
+The worker now has a configurable 300-second inference deadline so this recovery
+can happen under Docker's restart policy. Subprocess tests verify both forced
+exit on a simulated stall and cancellation of the timer after successful work.
+These observations do not establish a fixed chapter-preparation time under shared
+GPU load, and a named tunnel does not remove Cloudflare's request-duration limits.
+
+A previously undownloaded 16-page chapter was enqueued using Suwayomi's native
+`POST /api/v1/download/batch`, without a translator enqueue request. The watcher
+automatically discovered its completed download, prepared all 16 pages (70
+translated regions), and published a valid CBZ. Every Suwayomi reader response
+matched its corresponding translated CBZ page byte-for-byte. Native exported
+original entries remained identical to the retained source archive. The 16
+prepared reads took 0.024–0.046 seconds (median 0.037 seconds), with no new
+inference or page-cache job changes. This end-to-end trial included the stalls,
+retries and maintenance pauses described above; it is not an isolated throughput
+benchmark.
+
+A disposable container running the production worker image was also given a
+simulated stalled inference and a short watchdog deadline. It exited with code
+70, Docker restarted it once as configured, and the second timeout also exited
+70. The test container was removed afterward; it did not load GPU models or touch
+chapter data.

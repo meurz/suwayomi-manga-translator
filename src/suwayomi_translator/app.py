@@ -18,10 +18,12 @@ from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingRes
 from PIL import Image, UnidentifiedImageError
 
 from . import pngstream
+from .chapters import ChapterManager, WorkerUnavailable
+from .suwayomi import Suwayomi
 
 Image.MAX_IMAGE_PIXELS = 24_000_000
 MAX_BYTES = 25 * 1024 * 1024
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 
 class Store:
@@ -118,7 +120,7 @@ def create_app(root=None, worker_url=None):
     tasks = {}
     slots = asyncio.Semaphore(1)
     profile = os.getenv("CACHE_PROFILE", "mit-95227a2-chs-v1")
-    state = {"enabled": True}
+    state = {"enabled": True, "mode": os.getenv("TRANSLATION_MODE", "chapters")}
     state_file = root / "settings.json"
 
     @asynccontextmanager
@@ -127,7 +129,15 @@ def create_app(root=None, worker_url=None):
         if state_file.exists():
             state.update(json.loads(state_file.read_text()))
         app.state.client = httpx.AsyncClient(timeout=300, trust_env=False)
+        app.state.chapters = None
+        if os.getenv("SUWAYOMI_URL"):
+            app.state.chapters = ChapterManager(
+                root / "chapters", Suwayomi(os.environ["SUWAYOMI_URL"]), strict_translate, profile
+            )
+            app.state.chapters.start()
         yield
+        if app.state.chapters:
+            await app.state.chapters.close()
         for task in tasks.values():
             task.cancel()
         await asyncio.gather(*tasks.values(), return_exceptions=True)
@@ -216,6 +226,31 @@ def create_app(root=None, worker_url=None):
             tasks[key] = asyncio.create_task(process(key, data, force))
         return key, False
 
+    async def strict_translate(data):
+        try:
+            key, _ = await submit(data)
+        except HTTPException as exc:
+            if exc.status_code == 503:
+                raise WorkerUnavailable() from exc
+            raise
+        if key in tasks:
+            await asyncio.shield(tasks[key])
+        row = store().get(key)
+        path = root / f"{key}.result"
+        if row and row["status"] in {"translated", "skipped"} and path.exists():
+            return path.read_bytes(), row["mime"], row["status"], row["regions"]
+        error = row["error"] if row else "Page result unavailable"
+        if error.startswith("Worker HTTP 5") or error in {
+            "ConnectError",
+            "ConnectTimeout",
+            "ReadTimeout",
+            "WriteTimeout",
+            "PoolTimeout",
+            "RemoteProtocolError",
+        }:
+            raise WorkerUnavailable()
+        raise RuntimeError("Page translation failed: " + error)
+
     async def read_upload(image):
         data = await image.read(MAX_BYTES + 1)
         if len(data) > MAX_BYTES:
@@ -231,6 +266,17 @@ def create_app(root=None, worker_url=None):
         authorize(request)
         data = await read_upload(image)
         mime = image_info(data)
+        if app.state.chapters:
+            prepared = app.state.chapters.lookup(data)
+            if prepared:
+                result, result_mime = prepared
+                return Response(result, media_type=result_mime, headers={"X-Outcome": "prepared"})
+        if state["mode"] == "chapters":
+            return Response(
+                data,
+                media_type=mime,
+                headers={"X-Outcome": "unprepared", "Cache-Control": "no-store"},
+            )
         if not state["enabled"]:
             return Response(data, media_type=mime, headers={"X-Outcome": "disabled"})
         try:
@@ -300,6 +346,8 @@ def create_app(root=None, worker_url=None):
         authorize(request, True)
         return {
             "enabled": state["enabled"],
+            "mode": state["mode"],
+            "chapters_configured": app.state.chapters is not None,
             "version": VERSION,
             "profile": profile,
             "pending": len(tasks),
@@ -316,6 +364,127 @@ def create_app(root=None, worker_url=None):
         state["enabled"] = body["enabled"]
         Store.atomic(state_file, json.dumps(state).encode())
         return state
+
+    @app.post("/admin/api/mode")
+    async def mode(request: Request):
+        authorize(request, True)
+        body = await request.json()
+        if not isinstance(body, dict) or body.get("mode") not in {"chapters", "online"}:
+            raise HTTPException(400, "mode must be chapters or online")
+        state["mode"] = body["mode"]
+        Store.atomic(state_file, json.dumps(state).encode())
+        return state
+
+    def chapters(request):
+        authorize(request, True)
+        if not app.state.chapters:
+            raise HTTPException(503, "Configure SUWAYOMI_URL to enable chapter processing")
+        return app.state.chapters
+
+    @app.get("/admin/api/chapters")
+    async def chapter_status(request: Request):
+        return chapters(request).summary()
+
+    @app.post("/admin/api/chapters/options")
+    async def chapter_options(request: Request):
+        manager = chapters(request)
+        body = await request.json()
+        if (
+            not isinstance(body, dict)
+            or not body
+            or any(
+                k not in {"paused", "auto_downloads"} or type(v) is not bool
+                for k, v in body.items()
+            )
+        ):
+            raise HTTPException(400, "Expected paused or auto_downloads boolean")
+        for key, value in body.items():
+            manager.set_option(key, value)
+        return manager.summary()
+
+    @app.get("/admin/api/manga/{manga_id}")
+    async def manga_chapters(request: Request, manga_id: int):
+        manager = chapters(request)
+        if manga_id < 1:
+            raise HTTPException(400, "Invalid manga ID")
+        try:
+            return await manager.source.manga(manga_id)
+        except Exception as exc:
+            raise HTTPException(502, "Cannot load manga from Suwayomi") from exc
+
+    @app.post("/admin/api/chapters/enqueue")
+    async def enqueue_chapters(request: Request):
+        manager = chapters(request)
+        body = await request.json()
+        ids = body.get("chapter_ids") if isinstance(body, dict) else None
+        if (
+            not isinstance(ids, list)
+            or not 0 < len(ids) <= 100
+            or any(type(i) is not int or i < 1 for i in ids)
+        ):
+            raise HTTPException(400, "Provide 1 to 100 positive chapter IDs")
+        results = []
+        for chapter_id in dict.fromkeys(ids):
+            try:
+                manager.add(await manager.source.chapter(chapter_id))
+                results.append({"id": chapter_id, "accepted": True})
+            except Exception:
+                results.append(
+                    {
+                        "id": chapter_id,
+                        "accepted": False,
+                        "error": "Chapter unavailable or already active",
+                    }
+                )
+        return {"results": results}
+
+    @app.post("/admin/api/chapters/{chapter_id}/{action}")
+    async def chapter_action(request: Request, chapter_id: int, action: str):
+        manager = chapters(request)
+        row = manager.get(chapter_id)
+        if chapter_id < 1 or not row:
+            raise HTTPException(404, "Unknown chapter")
+        try:
+            if action == "retry":
+                manager.add(json.loads(row["metadata"]))
+            elif action == "cancel":
+                if row["status"] != "ready":
+                    manager.update(chapter_id, status="cancelled")
+            elif action == "remove":
+                manager.remove(chapter_id)
+            else:
+                raise HTTPException(404, "Unknown action")
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return manager.summary()
+
+    @app.get("/admin/api/chapters/{chapter_id}/export")
+    async def export_chapter(request: Request, chapter_id: int):
+        manager = chapters(request)
+        row = manager.get(chapter_id)
+        if chapter_id < 1 or not row or row["status"] != "ready":
+            raise HTTPException(409, "The whole chapter must be ready before export")
+        path = manager.root / str(chapter_id) / "translated.cbz"
+
+        def checksum():
+            with path.open("rb") as file:
+                return hashlib.file_digest(file, "sha256").hexdigest()
+
+        try:
+            valid = await asyncio.to_thread(checksum) == row["archive_sha"]
+        except OSError:
+            valid = False
+        if not valid:
+            manager.update(
+                chapter_id, status="failed", error="Translated archive damaged; retry chapter"
+            )
+            raise HTTPException(409, "Translated archive failed verification")
+        return FileResponse(
+            path,
+            media_type="application/vnd.comicbook+zip",
+            filename=f"chapter-{chapter_id}-zh.cbz",
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.post("/admin/api/upload")
     async def upload(request: Request, image: UploadFile, force: bool = False):

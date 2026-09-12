@@ -17,6 +17,8 @@ def png(color="white"):
 
 @pytest.fixture
 async def setup(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRANSLATION_MODE", "online")
+    monkeypatch.delenv("SUWAYOMI_URL", raising=False)
     monkeypatch.setenv("PROCESSOR_TOKEN", "test-processor")
     monkeypatch.setenv("ADMIN_TOKEN", "test-admin")
     app = create_app(tmp_path, "http://worker")

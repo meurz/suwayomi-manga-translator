@@ -1,6 +1,6 @@
 # Suwayomi Manga Translator
 
-Automatic manga translation through Suwayomi's built-in HTTP image processor.
+Prepare complete translated chapters ahead of reading, using Suwayomi's downloads and built-in HTTP image processor.
 No Suwayomi fork, reader patch, or replacement source extension is required.
 
 The service uses [manga-image-translator](https://github.com/zyddnys/manga-image-translator)
@@ -13,26 +13,95 @@ are excluded before erasing. OCR and language identification are imperfect.
 
 ## What you get
 
-- Automatic image processing while reading through Suwayomi.
+- Automatic preparation of new completed Suwayomi downloads.
+- Durable chapter queue, per-page resume, whole-chapter validation and translated CBZ export.
+- Instant reading of prepared chapters, including when the worker is offline.
+- Optional automatic image processing while reading through Suwayomi.
 - Region-level Chinese/uncertain-text skipping and original-image fallback.
 - Content-addressed cache, duplicate-request coalescing, bounded queue and retries.
-- A small management page: enable/pause, upload a test page, inspect jobs and compare images.
+- Management page: select chapters by manga URL/ID, pause/resume, monitor progress, retry, export and compare test pages.
 - Separate gateway and CPU/CUDA worker containers, with CPU and memory limits.
 - Streaming PNG responses for slow pages, keeping Suwayomi's 30-second idle read timeout alive.
 
 ```mermaid
 flowchart LR
   Reader --> Suwayomi
-  Suwayomi --> Gateway[Translation gateway: cache and queue]
+  Suwayomi --> Gateway[Translation gateway: prepared chapters]
+  Suwayomi --> Downloads[Original chapter downloads]
+  Downloads --> Queue[Durable background chapter queue]
+  Queue --> Worker
+  Worker --> Verified[Whole-chapter validation]
+  Verified --> Gateway
   Gateway --> Worker[manga-image-translator CPU or CUDA worker]
   Worker --> LLM[Configured translation API]
   Worker --> Gateway
   Gateway --> Suwayomi
 ```
 
-The image postprocessor receives image bytes, not the manga title, chapter ID or
-page number. This version has global enable/pause, not per-book rules or automatic
-chapter pretranslation. Existing browser/reader caches may need refreshing.
+The chapter manager uses Suwayomi's chapter API and raw downloaded CBZ export.
+The read hook matches original image bytes to the verified chapter manifest.
+Existing browser/reader caches may need refreshing after preparation.
+
+## Download ahead (default)
+
+1. Download chapters normally in Suwayomi. The gateway checks completed downloads every 30 seconds.
+2. Open the management page and wait for the chapter status to become **ready**.
+3. Read the same manga/chapter in Suwayomi. Prepared pages come directly from gateway disk.
+4. To save the translated edition on another device, use **Translated CBZ** in management.
+
+You can also paste a Suwayomi manga URL or numeric ID into management, select up
+to 100 chapters, and choose **Download & translate selected**. Native downloads
+run first; translation starts after the chapter download completes. Chapters
+already downloaded on the gateway's first successful scan are listed as
+**available** for manual preparation, preventing an unexpected library-wide job.
+
+**Original downloads remain in Suwayomi.** Its native downloaded badge and native
+CBZ export describe originals, not translation readiness. The gateway keeps a
+separate translated edition under `data/chapters/`. Do not configure
+`downloadConversions` to point at the reader endpoint: upstream can mark a
+download complete even after conversion errors, and reader fallbacks preserve
+originals. This integration never overwrites or removes native chapter files.
+
+A chapter becomes ready only after every page is translated or validly skipped,
+checksummed, decoded, and included in a verified CBZ. Until then the default
+`chapters` mode returns originals without starting online inference. Chinese,
+uncertain and text-free pages retain their original bytes. Cancel finishes the
+current page and stops further translation; it does not cancel Suwayomi downloads.
+Pause also takes effect between pages. Successful pages survive retries/restarts.
+Worker/network outages wait and retry every 60 seconds; other processing errors
+retry three times before requiring manual retry. The worker exits if a single
+inference exceeds 300 seconds (`WORKER_PAGE_TIMEOUT`); Docker's restart policy
+recycles it, and chapter processing resumes from its last verified page. Direct
+non-Docker deployments must use a process supervisor for this recovery. A tunnel
+can still time out earlier; these pages remain pending instead of being published. Native download waits time out
+after 30 minutes, with a message to check Suwayomi's download queue.
+
+Chapter storage is durable and separate from the disposable page cache: default
+20 GiB total (`CHAPTER_MAX_BYTES`), without age eviction. Budget space for original
+CBZ, prepared pages and translated CBZ. Remove a translated copy in management to
+reclaim its managed files; native originals remain. Per-chapter limits: 1 GiB
+archive/expanded image data, 1,000 pages, 25 MiB and 24 million pixels per page.
+Back up the whole `data/chapters` directory, including its SQLite database.
+Changing `CACHE_PROFILE` affects new work; an existing ready edition remains
+readable until explicitly removed and prepared again.
+
+Set `SUWAYOMI_URL` in Compose `.env` to the trusted internal Suwayomi API (default
+`http://suwayomi:4567`). If needed, set `SUWAYOMI_AUTHORIZATION` in protected
+`gateway.env`. Local-source chapters require a read-only mount and currently
+support CBZ/ZIP only. For example, add to `compose.override.yaml`:
+
+```yaml
+services:
+  gateway:
+    volumes:
+      - /your/suwayomi/local:/suwayomi-local:ro
+```
+
+**Upgrade from v0.2.0:** rebuild/recreate the gateway with its Suwayomi API URL;
+the existing worker and model configuration remain compatible. Upgrade the worker
+as well to enable automatic recovery from stuck GPU inference. Chapter mode is
+the new default. The first successful scan only records existing downloads.
+Use the online-fallback checkbox to opt back into on-demand page processing.
 
 ## Install on Linux ARM64
 
@@ -110,8 +179,8 @@ The gateway sends the worker token over HTTPS. A remote worker receives page ima
 the translation API still receives only OCR text.
 
 The GPU host, Docker and tunnel must remain running. WSL/Windows sleep or tunnel
-failure makes uncached pages fall back to originals; already cached pages still
-work. To return to the local CPU worker, remove the `WORKER_URL` override and
+failure pauses chapter preparation until connectivity recovers; prepared chapters
+remain readable and exportable. Optional online mode falls back to originals. To return to the local CPU worker, remove the `WORKER_URL` override and
 recreate the gateway. Ensure its worker token matches the CPU worker too.
 
 **Upgrade from v0.1.0:** worker authentication is now required. Run
@@ -174,11 +243,12 @@ python3 scripts/local_ui.py
 # Open http://127.0.0.1:18441/
 ```
 
-The UI can pause processing, upload a test image, inspect the latest 100 jobs,
-compare original/result images and retry failures. API model/key configuration
+The UI shows the latest 200 chapter jobs and 100 test-page jobs, with chapter
+selection, pause, automatic-download monitoring, retries and translated CBZ export.
+Page testing and optional online controls are under a collapsible section. API model/key configuration
 is currently through `worker.env`, followed by `docker compose up -d`.
 
-## Reading behavior and limits
+## Optional online reading behavior and limits
 
 | Situation | Behavior |
 | --- | --- |
@@ -223,8 +293,9 @@ docker compose ps
 curl http://127.0.0.1:18440/health
 ```
 
-Use the UI pause button for an immediate bypass, or restore Suwayomi's old
-configuration before shutting down the service. Do not remove `data/` or the
+Use chapter pause to stop background work after the current page. Prepared
+chapters remain served. Restore Suwayomi's old configuration to bypass all
+translation before shutting down the service. Do not remove `data/` or the
 Suwayomi library to uninstall this integration.
 
 ## Development

@@ -7,6 +7,7 @@ import os
 import secrets
 import threading
 import time
+from contextlib import contextmanager
 
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, Response
@@ -35,6 +36,23 @@ def device():
     if value not in {"cpu", "cuda"}:
         raise ValueError("WORKER_DEVICE must be cpu or cuda")
     return value
+
+
+@contextmanager
+def inference_deadline():
+    """Recycle a stuck worker; the gateway retains the chapter checkpoint."""
+
+    def expired():
+        logging.getLogger(__name__).error("Inference deadline exceeded; recycling worker")
+        os._exit(70)
+
+    timer = threading.Timer(float(os.getenv("WORKER_PAGE_TIMEOUT", "300")), expired)
+    timer.daemon = True
+    timer.start()
+    try:
+        yield
+    finally:
+        timer.cancel()
 
 
 def pipeline():
@@ -131,7 +149,7 @@ def process(image: UploadFile, force: bool = False):
         source.load()
         if getattr(source, "n_frames", 1) > 1:
             raise ValueError("Animated images are not supported")
-        with _lock:
+        with _lock, inference_deadline():
             engine = pipeline()
             engine.force = force
             engine.page_start = time.monotonic()

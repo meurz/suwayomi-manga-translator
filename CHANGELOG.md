@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0
+
+- Recycle stalled inference workers after a configurable deadline, preserving gateway checkpoints.
+- Make ahead-of-reading chapter preparation the default workflow.
+- Watch new completed Suwayomi downloads; provide manual backfill and manga chapter selection.
+- Preserve originals, resume successful pages, and publish only fully verified chapters.
+- Serve durable prepared pages without worker access and export translated CBZ archives.
+- Add pause, cancel, retry and storage cleanup controls; keep online fallback optional.
+
+
 ## 0.2.0 — 2026-09-13
 
 Add an authenticated remote CUDA worker and NVIDIA/WSL Compose configurations.
