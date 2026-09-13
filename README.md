@@ -84,13 +84,16 @@ a time; completed pages can checkpoint out of order, but CBZ order stays unchang
 
 `PAGE_CONCURRENCY=2` is the default on **both gateway and worker**. Set it to `1`
 on both hosts and recreate the affected services to restore serial admission.
-Only 1 and 2 are supported to bound RAM, VRAM and cloud API load. A saturated
-worker returns 503, and chapter preparation retries instead of publishing originals
+Only 1 and 2 are supported to bound RAM, VRAM and cloud API load.
+The two hosts must use matching values; worker health reports its admission limit.
+A saturated worker returns 503, and chapter preparation retries instead of publishing originals
 as translations. Already submitted pages can finish after pause, cancel or a
 language-rule change; no new pages are submitted once the change is observed.
 Confirmed Chinese books bypass this pipeline entirely. Model, prompt and cache
 profile do not change with concurrency. This improves chapter throughput; it does
-not promise to halve individual page latency.
+not promise to halve individual page latency. A four-page ARM → Tunnel → GPU
+trial took 85.8 seconds serially and 42.4 seconds with two pages in flight; see
+[verification details](docs/verification.md#v050-page-pipeline) for scope and limitations.
 
 Chapter storage is durable and separate from the disposable page cache: default
 20 GiB total (`CHAPTER_MAX_BYTES`), without age eviction. Budget space for original

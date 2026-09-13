@@ -212,3 +212,72 @@ source-scoped manga IDs, original-only native downloads, active-page policy chan
 manual override/reset, persistence, reader bypass, and authenticated management.
 The unindexed online-read limitation remains documented in README: Suwayomi's
 image hook does not provide a manga ID.
+
+## v0.5.0 page pipeline
+
+The gateway, chapter scheduler and GPU worker were deployed with
+`PAGE_CONCURRENCY=2`. Models and translation settings remain unchanged:
+`gpt-5.6-luna`, Responses API, low reasoning, the pinned upstream engine and the
+existing cache profile. GPU model stages remain serialized; page-local engine
+objects share upstream model caches. Worker logs show the second page entering
+OCR and cloud translation before the first page's cloud request completes.
+
+Four existing English-language comic pages were processed without page-cache hits
+using the same images in each run. These are throughput checks, not Japanese OCR
+quality benchmarks. Input/output comic files remain private.
+
+| Path | Serial | Two pages in flight | Scope |
+| --- | ---: | ---: | --- |
+| WSL loopback to GPU worker | 65.276 s | 26.392 s | Four complete page responses; first serial run included model initialization |
+| ARM gateway → QUIC Quick Tunnel → WSL GPU | 85.778 s | 42.436 s | Isolated chapter jobs, uncached inference, page validation and completed CBZ |
+
+The ARM comparison used the actual gateway submission path and chapter manager
+with an isolated local archive source and separate empty task/cache directories.
+It observed peak processing counts of 1 and 2 respectively. Both complete CBZs
+passed CRC validation, all four reader responses matched their corresponding CBZ
+entries byte for byte, and both runs returned 29 translated regions. The ARM run
+reduced total chapter preparation time by 50.5% (2.02× throughput). Cloud latency,
+network transfer, GPU sharing and warm-up affect these small sequential trials;
+the result does not guarantee the same speedup for other chapters or halve
+single-page latency. Translation wording and region decisions can vary between
+cloud calls. Existing OCR omissions and typesetting limitations remain.
+
+The RTX 3070 Laptop GPU has 8 GiB VRAM; total observed usage during the trial was
+about 5.9 GiB, including unrelated Windows GPU usage (about 3.4 GiB before work).
+The worker retains its 4 CPU / 6 GiB RAM limit and two Torch threads.
+
+Reproduce a direct worker comparison with a private CBZ containing exactly the
+specified page count and `WORKER_TOKEN` supplied in the environment:
+
+```sh
+uv run python scripts/benchmark_pipeline.py /path/to/private.cbz \
+  --pages 4 --concurrency 1 2 --output experiments/pipeline
+```
+
+The benchmark bypasses the gateway cache, verifies images and skipped bytes, and
+writes per-page images and timing JSON to the selected private output directory.
+
+Regression validation: 61 tests cover two simultaneous worker HTTP requests,
+exclusive model stages, per-page force/language isolation, retryable overload,
+cloud failure cleanup, bounded chapter scheduling, pause/cancel/original-only
+policy changes with two requests in flight, out-of-order checkpoint recovery and
+end-to-end gateway admission. Ruff, source/wheel builds and installation into an
+isolated Python environment passed. The desktop and 390 px management UI show
+the configured capacity and preserve Chinese language rules.
+
+A separate live Suwayomi Local-source chapter contained four uncached PNG pages
+plus Chinese and blank controls (six pages total). It reached ready with peak
+processing=2, and all six native Suwayomi reader responses matched the translated
+CBZ exactly. Chinese and blank controls retained their original bytes. Prepared
+reads took 0.050–0.125 seconds. This larger PNG case took **241.253 seconds** to
+prepare: the four foreign pages were 1.08–1.46 MB each, gateway request times were
+97.785–123.202 seconds, while their logged engine pipelines took 11.42–16.17
+seconds. Transfer/path overhead dominated this case despite working pipeline
+concurrency; the small compressed-image trial must not be generalized to large
+PNG uploads over the temporary tunnel.
+
+A simultaneous real Japanese/Chinese request pair also passed: the Japanese page
+translated 14 regions in 16.662 seconds; the Chinese page returned exact original
+bytes, zero translated regions, and independent Chinese evidence in 4.380 seconds.
+These direct worker requests bypassed caches. The established Chinese-book policy
+survived the gateway upgrade.
