@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0
+
+- Remember Chinese manga after a complete chapter provides sufficient language evidence.
+- Bypass models for later chapters; preserve original pages and index their hashes for reading.
+- Add per-manga Auto, Always process, Original only and reset controls.
+- Keep mixed/uncertain chapters and historical skipped results from establishing Chinese.
+
 ## 0.3.0
 
 - Recycle stalled inference workers after a configurable deadline, preserving gateway checkpoints.

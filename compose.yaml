@@ -1,6 +1,6 @@
 services:
   worker:
-    image: suwayomi-translator-worker:0.3.0
+    image: suwayomi-translator-worker:0.4.0
     build:
       context: .
       dockerfile: deploy/Dockerfile.worker
@@ -17,7 +17,7 @@ services:
     restart: unless-stopped
     networks: [translation]
   gateway:
-    image: suwayomi-translator:0.3.0
+    image: suwayomi-translator:0.4.0
     build:
       context: .
       dockerfile: deploy/Dockerfile
