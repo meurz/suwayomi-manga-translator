@@ -103,6 +103,48 @@ as well to enable automatic recovery from stuck GPU inference. Chapter mode is
 the new default. The first successful scan only records existing downloads.
 Use the online-fallback checkbox to opt back into on-demand page processing.
 
+## Remember Chinese manga
+
+The gateway remembers a language policy for each Suwayomi manga ID. Editions from
+different sources are separate records, even when their titles match.
+
+In **Auto**, a completely verified chapter establishes Chinese only when at least
+three distinct pages contain confident Chinese dialogue, with at least six regions
+and 80 Han characters in total, and no foreign or uncertain alphabetic text. Any
+previously observed foreign-language page blocks automatic Chinese classification.
+Blank chapters, Chinese covers/credits alone, incomplete jobs and historical
+`skipped` cache entries without language evidence cannot establish the language.
+Language evidence consists only of counts, not retained OCR dialogue.
+
+After Chinese is established, later downloaded chapters skip detection, OCR,
+translation, inpainting and typesetting. The gateway briefly reads the raw chapter
+to validate and index original image hashes, then discards a newly acquired managed
+archive; it generates no translated pages or CBZ. Their status is **original**.
+The first checked chapter and any existing prepared copies are retained. Read and
+export originals through Suwayomi. Changing to original-only also overrides prepared
+images when those original bytes are encountered by the reader.
+
+Management provides **Auto**, **Always process** (disable automatic book skipping),
+and **Original only** (manual override), plus **Reset detection** for a learned
+Chinese book. Reset retains past foreign-language observations; use Original only
+for an explicit override. Changes take effect after any current page finishes. Resetting makes
+previously bypassed chapters available for manual preparation; it does not trigger
+an unexpected library-wide retranslation. Chinese regions remain preserved even
+with Always process. A later chapter can change language, so override/reset the
+policy if an edition switches translators or contains multilingual chapters.
+
+Suwayomi's read hook still sends image bytes through the gateway; the original
+response bypasses the models. In default chapter mode, even unindexed pages return
+originals without inference. Optional online fallback cannot associate a previously
+unseen, unindexed image with a manga ID, so book rules apply there only after its
+downloaded chapter has been indexed. Page-test uploads remain explicit model tests.
+
+Upgrade both gateway and worker for language evidence. Existing cache results and
+prepared chapters remain usable, but missing historical language evidence is not
+inferred from a skipped result. Back up the gateway's SQLite databases before this
+schema upgrade; an older gateway requires restoring its corresponding databases
+for rollback.
+
 ## Install on Linux ARM64
 
 Requires Docker Compose, approximately 5 GB available RAM for the configured worker

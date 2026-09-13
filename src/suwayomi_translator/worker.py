@@ -2,6 +2,7 @@
 
 import asyncio
 import io
+import json
 import logging
 import os
 import secrets
@@ -13,6 +14,7 @@ from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, Response
 from PIL import Image
 
+from .language import empty_evidence, summarize_languages
 from .provider import should_translate, translate_regions
 
 app = FastAPI(docs_url=None, redoc_url=None)
@@ -99,6 +101,7 @@ def pipeline():
             if not regions:
                 return []
             decisions = await translate_regions([r.text for r in regions])
+            self.language_evidence = summarize_languages([r.text for r in regions], decisions)
             selected = []
             for region, decision in zip(regions, decisions, strict=True):
                 if not should_translate(decision, region.text, self.force):
@@ -152,6 +155,7 @@ def process(image: UploadFile, force: bool = False):
         with _lock, inference_deadline():
             engine = pipeline()
             engine.force = force
+            engine.language_evidence = empty_evidence()
             engine.page_start = time.monotonic()
             config = Config.model_validate(
                 {
@@ -175,6 +179,7 @@ def process(image: UploadFile, force: bool = False):
             count = len(ctx.text_regions or [])
             headers = {
                 "X-Regions": str(count),
+                "X-Language-Evidence": json.dumps(engine.language_evidence),
                 "X-Elapsed": str(round(time.monotonic() - started, 3)),
                 "X-Outcome": "translated" if count else "skipped",
             }

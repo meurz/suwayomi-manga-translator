@@ -19,11 +19,12 @@ from PIL import Image, UnidentifiedImageError
 
 from . import pngstream
 from .chapters import ChapterManager, WorkerUnavailable
+from .language import parse_evidence
 from .suwayomi import Suwayomi
 
 Image.MAX_IMAGE_PIXELS = 24_000_000
 MAX_BYTES = 25 * 1024 * 1024
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 
 class Store:
@@ -37,6 +38,8 @@ class Store:
             id TEXT PRIMARY KEY, status TEXT, mime TEXT, created REAL, updated REAL,
             elapsed REAL DEFAULT 0, regions INTEGER DEFAULT 0, error TEXT DEFAULT '',
             hits INTEGER DEFAULT 0, force INTEGER DEFAULT 0)""")
+        if "language" not in {r[1] for r in self.db.execute("PRAGMA table_info(jobs)")}:
+            self.db.execute("ALTER TABLE jobs ADD COLUMN language TEXT DEFAULT '{}'")
         self.db.execute(
             "UPDATE jobs SET status='failed',error='Service restarted; retry this page' "
             "WHERE status IN ('queued','processing')"
@@ -188,6 +191,7 @@ def create_app(root=None, worker_url=None):
                     elapsed=round(time.monotonic() - started, 3),
                     regions=int(r.headers.get("x-regions", 0)),
                     error="",
+                    language=json.dumps(parse_evidence(r.headers.get("x-language-evidence"))),
                 )
         except asyncio.CancelledError:
             store().update(key, status="failed", error="Service stopped; retry this page")
@@ -238,7 +242,13 @@ def create_app(root=None, worker_url=None):
         row = store().get(key)
         path = root / f"{key}.result"
         if row and row["status"] in {"translated", "skipped"} and path.exists():
-            return path.read_bytes(), row["mime"], row["status"], row["regions"]
+            return (
+                path.read_bytes(),
+                row["mime"],
+                row["status"],
+                row["regions"],
+                parse_evidence(row["language"]),
+            )
         error = row["error"] if row else "Page result unavailable"
         if error.startswith("Worker HTTP 5") or error in {
             "ConnectError",
@@ -408,9 +418,23 @@ def create_app(root=None, worker_url=None):
         if manga_id < 1:
             raise HTTPException(400, "Invalid manga ID")
         try:
-            return await manager.source.manga(manga_id)
+            manga = await manager.source.manga(manga_id)
+            manager.ensure_manga(manga_id, manga["title"])
+            return {**manga, "policy": manager.policy(manga_id)}
         except Exception as exc:
             raise HTTPException(502, "Cannot load manga from Suwayomi") from exc
+
+    @app.post("/admin/api/manga/{manga_id}/policy")
+    async def manga_policy(request: Request, manga_id: int):
+        manager = chapters(request)
+        body = await request.json()
+        mode = body.get("mode") if isinstance(body, dict) else None
+        if manga_id < 1 or mode not in {"auto", "translate", "original"}:
+            raise HTTPException(400, "Choose auto, translate or original for a positive manga ID")
+        if not manager.policy(manga_id):
+            raise HTTPException(404, "Load the manga before setting its policy")
+        manager.set_policy(manga_id, mode)
+        return manager.policy(manga_id)
 
     @app.post("/admin/api/chapters/enqueue")
     async def enqueue_chapters(request: Request):
@@ -464,6 +488,8 @@ def create_app(root=None, worker_url=None):
         row = manager.get(chapter_id)
         if chapter_id < 1 or not row or row["status"] != "ready":
             raise HTTPException(409, "The whole chapter must be ready before export")
+        if manager.bypass(row["manga_id"]):
+            raise HTTPException(409, "This manga uses original pages; export from Suwayomi")
         path = manager.root / str(chapter_id) / "translated.cbz"
 
         def checksum():

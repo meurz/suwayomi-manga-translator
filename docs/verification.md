@@ -186,3 +186,29 @@ simulated stalled inference and a short watchdog deadline. It exited with code
 70, Docker restarted it once as configured, and the second timeout also exited
 70. The test container was removed afterward; it did not load GPU models or touch
 chapter data.
+
+## Manga language memory (v0.4.0)
+
+The existing ARM v0.3.0 page and chapter databases were backed up and migrated.
+Previously prepared Japanese chapters remained ready. Their observed translations
+seeded foreign-language history; old skipped results were not assumed Chinese.
+
+A generated Chinese fixture used two chapters, each containing three distinct
+1000 × 1400 pages. The first chapter ran through the real GPU worker and cloud
+language model: 9 confident Chinese regions, 136 Han characters, no foreign or
+uncertain regions. After full chapter validation, its manga policy automatically
+became Chinese. All three source pages retained their exact bytes.
+
+The GPU worker was actually stopped before enqueueing the second chapter. Its
+three pages reached original-only status in 0.721 seconds, with zero new model
+jobs and no generated translated CBZ, page outputs or retained duplicate source
+archive. Every Suwayomi reader response matched the corresponding original bytes.
+An indexed page also bypassed inference with optional online fallback enabled;
+chapter mode was restored immediately afterward, and the worker restarted.
+
+51 tests cover this policy's evidence transport, complete-chapter requirement,
+blank/cover/duplicate/uncertain/mixed/legacy exclusions, foreign-language history,
+source-scoped manga IDs, original-only native downloads, active-page policy changes,
+manual override/reset, persistence, reader bypass, and authenticated management.
+The unindexed online-read limitation remains documented in README: Suwayomi's
+image hook does not provide a manga ID.

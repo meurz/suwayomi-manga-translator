@@ -14,6 +14,8 @@ from pathlib import Path
 
 from PIL import Image
 
+from .language import chinese_chapter, parse_evidence
+
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 PAGE_LIMIT = 25 * 1024 * 1024
 ARCHIVE_LIMIT = 1024 * 1024 * 1024
@@ -92,14 +94,105 @@ class ChapterManager:
           CREATE TABLE IF NOT EXISTS seen (id INTEGER PRIMARY KEY, present INTEGER NOT NULL);
           CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         """)
+        self.db.executescript("""
+          CREATE TABLE IF NOT EXISTS manga_policies (
+            manga_id INTEGER PRIMARY KEY, title TEXT NOT NULL, mode TEXT DEFAULT 'auto',
+            detected TEXT DEFAULT 'unknown', foreign_seen INTEGER DEFAULT 0,
+            evidence TEXT DEFAULT '{}', updated REAL NOT NULL
+          );
+          CREATE TABLE IF NOT EXISTS original_pages (
+            chapter_id INTEGER NOT NULL, original_sha TEXT NOT NULL, mime TEXT NOT NULL,
+            PRIMARY KEY(chapter_id, original_sha)
+          );
+          CREATE INDEX IF NOT EXISTS original_hash ON original_pages(original_sha);
+        """)
+        for table, column, definition in [
+            ("chapters", "manga_id", "INTEGER DEFAULT 0"),
+            ("pages", "evidence", "TEXT DEFAULT '{}'"),
+        ]:
+            if column not in {r[1] for r in self.db.execute(f"PRAGMA table_info({table})")}:
+                self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        for row in self.db.execute("SELECT id,metadata FROM chapters WHERE manga_id=0").fetchall():
+            meta = json.loads(row["metadata"])
+            self.db.execute(
+                "UPDATE chapters SET manga_id=? WHERE id=?", (meta["mangaId"], row["id"])
+            )
+        for row in self.db.execute("SELECT metadata FROM chapters").fetchall():
+            meta = json.loads(row[0])
+            self.ensure_manga(meta["mangaId"], meta["manga"]["title"])
+        # Legacy translated pages are foreign-language evidence; skipped pages prove nothing.
         self.db.execute(
-            "UPDATE chapters SET status='queued' WHERE status IN ('fetching','translating','verifying')"
+            "UPDATE manga_policies SET foreign_seen=1 WHERE manga_id IN "
+            "(SELECT manga_id FROM chapters JOIN pages ON chapters.id=pages.chapter_id "
+            "WHERE pages.outcome='translated')"
+        )
+        self.db.execute(
+            "UPDATE chapters SET status='queued' WHERE status IN ('fetching','translating','verifying','indexing')"
         )
         self.db.commit()
         self.last_sync = 0
         self.watch_error = ""
         self.active = None
         self.tasks = []
+
+    def ensure_manga(self, manga_id, title):
+        self.db.execute(
+            "INSERT INTO manga_policies(manga_id,title,updated) VALUES(?,?,?) "
+            "ON CONFLICT(manga_id) DO UPDATE SET title=excluded.title",
+            (manga_id, title, time.time()),
+        )
+        self.db.commit()
+
+    def policy(self, manga_id):
+        row = self.db.execute(
+            "SELECT * FROM manga_policies WHERE manga_id=?", (manga_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def bypass(self, manga_id):
+        policy = self.policy(manga_id)
+        return bool(
+            policy
+            and (
+                policy["mode"] == "original"
+                or policy["mode"] == "auto"
+                and policy["detected"] == "chinese"
+            )
+        )
+
+    def set_policy(self, manga_id, mode):
+        self.db.execute(
+            "UPDATE manga_policies SET mode=?,detected='unknown',"
+            "evidence='{}',updated=? WHERE manga_id=?",
+            (mode, time.time(), manga_id),
+        )
+        if not self.bypass(manga_id):
+            self.db.execute(
+                "UPDATE chapters SET status='available',error='' "
+                "WHERE manga_id=? AND status='original'",
+                (manga_id,),
+            )
+        self.db.commit()
+
+    def learn_chapter(self, chapter, pages):
+        policy = self.policy(chapter["mangaId"])
+        if not policy or policy["mode"] != "auto" or policy["foreign_seen"]:
+            return
+        evidence = chinese_chapter(pages)
+        if evidence:
+            self.db.execute(
+                "UPDATE manga_policies SET detected='chinese',evidence=?,updated=? "
+                "WHERE manga_id=?",
+                (json.dumps(evidence), time.time(), chapter["mangaId"]),
+            )
+            self.db.commit()
+
+    def observe_foreign(self, manga_id, evidence, outcome):
+        if evidence.get("foreign_regions", 0) or outcome == "translated":
+            self.db.execute(
+                "UPDATE manga_policies SET foreign_seen=1 WHERE manga_id=?", (manga_id,)
+            )
+            self.db.commit()
 
     def option(self, key, default):
         row = self.db.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
@@ -123,6 +216,7 @@ class ChapterManager:
 
     def add(self, chapter, status="queued"):
         chapter_id = int(chapter["id"])
+        self.ensure_manga(chapter["mangaId"], chapter["manga"]["title"])
         row = self.get(chapter_id)
         if self.active == chapter_id:
             raise ValueError("Wait for the active page to finish before retrying")
@@ -143,6 +237,9 @@ class ChapterManager:
                 time.time(),
             ),
         )
+        self.db.execute(
+            "UPDATE chapters SET manga_id=? WHERE id=?", (chapter["mangaId"], chapter_id)
+        )
         self.db.commit()
         return self.get(chapter_id)
 
@@ -157,9 +254,14 @@ class ChapterManager:
                 manga_id=meta["mangaId"],
                 source_order=meta["sourceOrder"],
             )
+            job["uses_original"] = self.bypass(meta["mangaId"])
             jobs.append(job)
         return {
             "jobs": jobs,
+            "manga_policies": [
+                dict(r)
+                for r in self.db.execute("SELECT * FROM manga_policies ORDER BY updated DESC")
+            ],
             "paused": self.option("paused", False),
             "auto_downloads": self.option("auto_downloads", True),
             "initialized": self.option("initialized", False),
@@ -237,6 +339,16 @@ class ChapterManager:
             temp.unlink(missing_ok=True)
 
     def lookup(self, data):
+        source_hash = digest(data)
+        originals = self.db.execute(
+            "SELECT chapters.manga_id FROM original_pages JOIN chapters ON chapters.id=original_pages.chapter_id "
+            "WHERE original_sha=? UNION SELECT chapters.manga_id FROM pages JOIN chapters "
+            "ON chapters.id=pages.chapter_id WHERE original_sha=?",
+            (source_hash, source_hash),
+        ).fetchall()
+        if any(self.bypass(row[0]) for row in originals):
+            with Image.open(io.BytesIO(data)) as original:
+                return data, Image.MIME[original.format]
         rows = list(
             self.db.execute(
                 "SELECT pages.* FROM pages JOIN chapters ON chapters.id=pages.chapter_id "
@@ -291,6 +403,32 @@ class ChapterManager:
         temp.replace(archive)
         return checksum
 
+    async def use_originals(self, chapter, folder):
+        chapter_id = chapter["id"]
+        retained = (folder / "original.cbz").exists()
+        original = await self.acquire(chapter, folder)
+        names = await asyncio.to_thread(page_entries, original, chapter["pageCount"])
+        if self.get(chapter_id)["status"] == "cancelled":
+            return
+        self.update(chapter_id, status="indexing", total=len(names), error="")
+        entries = []
+        with zipfile.ZipFile(original) as archive:
+            for name in names:
+                data = await asyncio.to_thread(archive.read, name)
+                mime, _ = await asyncio.to_thread(inspect_image, data)
+                entries.append((chapter_id, digest(data), mime))
+        if self.get(chapter_id)["status"] == "cancelled":
+            return
+        if not self.bypass(chapter["mangaId"]):
+            self.update(chapter_id, status="queued")
+            return
+        with self.db:
+            self.db.execute("DELETE FROM original_pages WHERE chapter_id=?", (chapter_id,))
+            self.db.executemany("INSERT OR REPLACE INTO original_pages VALUES(?,?,?)", entries)
+        self.update(chapter_id, status="original", completed=len(names), error="", attempts=0)
+        if not retained:
+            original.unlink(missing_ok=True)
+
     async def process(self, chapter_id):
         row = self.get(chapter_id)
         if row["profile"] != self.profile:
@@ -327,6 +465,9 @@ class ChapterManager:
             metadata=json.dumps(chapter),
             total=chapter["pageCount"],
         )
+        if self.bypass(chapter["mangaId"]):
+            await self.use_originals(chapter, folder)
+            return
         original = await self.acquire(chapter, folder)
         names = await asyncio.to_thread(page_entries, original, chapter["pageCount"])
         if self.get(chapter_id)["status"] == "cancelled":
@@ -334,6 +475,8 @@ class ChapterManager:
         self.update(chapter_id, status="translating", completed=0)
         with zipfile.ZipFile(original) as archive:
             for number, name in enumerate(names):
+                if self.bypass(chapter["mangaId"]):
+                    break
                 if self.get(chapter_id)["status"] == "cancelled":
                     return
                 if self.option("paused", False):
@@ -343,7 +486,9 @@ class ChapterManager:
                 source_hash = digest(data)
                 if not self.existing_page(chapter_id, number, source_hash, folder):
                     _, original_size = await asyncio.to_thread(inspect_image, data)
-                    result, mime, outcome, regions = await self.translate(data)
+                    result, mime, outcome, regions, *extra = await self.translate(data)
+                    evidence = parse_evidence(extra[0] if extra else None)
+                    self.observe_foreign(chapter["mangaId"], evidence, outcome)
                     actual_mime, size = await asyncio.to_thread(inspect_image, result)
                     if (
                         size != original_size
@@ -359,11 +504,23 @@ class ChapterManager:
                     target.with_suffix(".part").write_bytes(result)
                     target.with_suffix(".part").replace(target)
                     self.db.execute(
-                        "INSERT OR REPLACE INTO pages VALUES (?,?,?,?,?,?,?)",
-                        (chapter_id, number, source_hash, digest(result), mime, outcome, regions),
+                        "INSERT OR REPLACE INTO pages VALUES (?,?,?,?,?,?,?,?)",
+                        (
+                            chapter_id,
+                            number,
+                            source_hash,
+                            digest(result),
+                            mime,
+                            outcome,
+                            regions,
+                            json.dumps(evidence),
+                        ),
                     )
                     self.db.commit()
                 self.update(chapter_id, completed=number + 1)
+        if self.get(chapter_id)["status"] != "cancelled" and self.bypass(chapter["mangaId"]):
+            await self.use_originals(chapter, folder)
+            return
         # No lookup can see any of these pages until this chapter becomes ready.
         if self.get(chapter_id)["status"] == "cancelled":
             return
@@ -380,7 +537,11 @@ class ChapterManager:
         checksum = await asyncio.to_thread(self.build_archive, folder, pages)
         if self.get(chapter_id)["status"] == "cancelled":
             return
+        if self.bypass(chapter["mangaId"]):
+            await self.use_originals(chapter, folder)
+            return
         self.update(chapter_id, status="ready", archive_sha=checksum, error="", attempts=0)
+        self.learn_chapter(chapter, pages)
 
     async def run(self):
         while True:
@@ -442,6 +603,7 @@ class ChapterManager:
             raise ValueError("Cancel the active chapter and wait for its current page first")
         with self.db:
             self.db.execute("DELETE FROM pages WHERE chapter_id=?", (chapter_id,))
+            self.db.execute("DELETE FROM original_pages WHERE chapter_id=?", (chapter_id,))
             self.db.execute("DELETE FROM chapters WHERE id=?", (chapter_id,))
         folder = self.root / str(chapter_id)
         if folder.exists():
