@@ -1,11 +1,12 @@
 services:
   worker:
-    image: suwayomi-translator-worker:0.4.0
+    image: suwayomi-translator-worker:0.5.0
     build:
       context: .
       dockerfile: deploy/Dockerfile.worker
     env_file: worker.env
     environment:
+      PAGE_CONCURRENCY: ${PAGE_CONCURRENCY:-2}
       TORCH_THREADS: '2'
       OMP_NUM_THREADS: '2'
       OPENBLAS_NUM_THREADS: '2'
@@ -17,7 +18,7 @@ services:
     restart: unless-stopped
     networks: [translation]
   gateway:
-    image: suwayomi-translator:0.4.0
+    image: suwayomi-translator:0.5.0
     build:
       context: .
       dockerfile: deploy/Dockerfile
@@ -27,6 +28,7 @@ services:
       DATA_DIR: /data
       SUWAYOMI_URL: ${SUWAYOMI_URL:-http://suwayomi:4567}
       TRANSLATION_MODE: chapters
+      PAGE_CONCURRENCY: ${PAGE_CONCURRENCY:-2}
       MAX_PENDING: '8'
       READER_WAIT: '80'
     volumes:

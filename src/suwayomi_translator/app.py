@@ -19,12 +19,13 @@ from PIL import Image, UnidentifiedImageError
 
 from . import pngstream
 from .chapters import ChapterManager, WorkerUnavailable
+from .concurrency import page_concurrency
 from .language import parse_evidence
 from .suwayomi import Suwayomi
 
 Image.MAX_IMAGE_PIXELS = 24_000_000
 MAX_BYTES = 25 * 1024 * 1024
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 
 
 class Store:
@@ -121,7 +122,7 @@ def create_app(root=None, worker_url=None):
     root = Path(root or os.getenv("DATA_DIR", "data"))
     worker_url = worker_url or os.getenv("WORKER_URL", "http://worker:8001")
     tasks = {}
-    slots = asyncio.Semaphore(1)
+    slots = asyncio.Semaphore(page_concurrency())
     profile = os.getenv("CACHE_PROFILE", "mit-95227a2-chs-v1")
     state = {"enabled": True, "mode": os.getenv("TRANSLATION_MODE", "chapters")}
     state_file = root / "settings.json"
@@ -257,6 +258,7 @@ def create_app(root=None, worker_url=None):
             "WriteTimeout",
             "PoolTimeout",
             "RemoteProtocolError",
+            "Worker HTTP 429",
         }:
             raise WorkerUnavailable()
         raise RuntimeError("Page translation failed: " + error)
@@ -361,6 +363,7 @@ def create_app(root=None, worker_url=None):
             "version": VERSION,
             "profile": profile,
             "pending": len(tasks),
+            "page_concurrency": page_concurrency(),
             "jobs": store().recent(),
             "model": os.getenv("PUBLIC_MODEL", "Configured in worker environment"),
         }

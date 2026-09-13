@@ -14,6 +14,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from .concurrency import page_concurrency
 from .language import chinese_chapter, parse_evidence
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -219,7 +220,7 @@ class ChapterManager:
         self.ensure_manga(chapter["mangaId"], chapter["manga"]["title"])
         row = self.get(chapter_id)
         if self.active == chapter_id:
-            raise ValueError("Wait for the active page to finish before retrying")
+            raise ValueError("Wait for the active pages to finish before retrying")
         if row and row["status"] not in {"available", "failed", "cancelled"}:
             return row
         if row and row["profile"] != self.profile:
@@ -258,6 +259,7 @@ class ChapterManager:
             jobs.append(job)
         return {
             "jobs": jobs,
+            "page_concurrency": page_concurrency(),
             "manga_policies": [
                 dict(r)
                 for r in self.db.execute("SELECT * FROM manga_policies ORDER BY updated DESC")
@@ -473,51 +475,101 @@ class ChapterManager:
         if self.get(chapter_id)["status"] == "cancelled":
             return
         self.update(chapter_id, status="translating", completed=0)
-        with zipfile.ZipFile(original) as archive:
-            for number, name in enumerate(names):
-                if self.bypass(chapter["mangaId"]):
+
+        def stopping():
+            return (
+                self.bypass(chapter["mangaId"])
+                or self.get(chapter_id)["status"] == "cancelled"
+                or self.option("paused", False)
+            )
+
+        def read_page(name):
+            with zipfile.ZipFile(original) as archive:
+                return archive.read(name)
+
+        async def prepare_page(number, name):
+            data = await asyncio.to_thread(read_page, name)
+            if stopping():
+                return
+            source_hash = digest(data)
+            if not self.existing_page(chapter_id, number, source_hash, folder):
+                _, original_size = await asyncio.to_thread(inspect_image, data)
+                if stopping():
+                    return
+                result, mime, outcome, regions, *extra = await self.translate(data)
+                evidence = parse_evidence(extra[0] if extra else None)
+                self.observe_foreign(chapter["mangaId"], evidence, outcome)
+                actual_mime, size = await asyncio.to_thread(inspect_image, result)
+                if (
+                    size != original_size
+                    or mime != actual_mime
+                    or outcome not in {"translated", "skipped"}
+                ):
+                    raise ValueError("Worker returned an invalid translated page")
+                if outcome == "skipped":
+                    result = data
+                    mime, _ = inspect_image(data)
+                self.capacity(len(result))
+                target = folder / f"{number:05d}.image"
+                target.with_suffix(".part").write_bytes(result)
+                target.with_suffix(".part").replace(target)
+                self.db.execute(
+                    "INSERT OR REPLACE INTO pages VALUES (?,?,?,?,?,?,?,?)",
+                    (
+                        chapter_id,
+                        number,
+                        source_hash,
+                        digest(result),
+                        mime,
+                        outcome,
+                        regions,
+                        json.dumps(evidence),
+                    ),
+                )
+                self.db.commit()
+            self.update(chapter_id, completed=self.get(chapter_id)["completed"] + 1)
+
+        pending = set()
+        entries = iter(enumerate(names))
+        exhausted = False
+        failure = None
+        try:
+            while pending or not exhausted:
+                while (
+                    not exhausted
+                    and not failure
+                    and not stopping()
+                    and len(pending) < page_concurrency()
+                ):
+                    entry = next(entries, None)
+                    if entry is None:
+                        exhausted = True
+                    else:
+                        pending.add(asyncio.create_task(prepare_page(*entry)))
+                if not pending:
                     break
-                if self.get(chapter_id)["status"] == "cancelled":
-                    return
-                if self.option("paused", False):
-                    self.update(chapter_id, status="queued")
-                    return
-                data = await asyncio.to_thread(archive.read, name)
-                source_hash = digest(data)
-                if not self.existing_page(chapter_id, number, source_hash, folder):
-                    _, original_size = await asyncio.to_thread(inspect_image, data)
-                    result, mime, outcome, regions, *extra = await self.translate(data)
-                    evidence = parse_evidence(extra[0] if extra else None)
-                    self.observe_foreign(chapter["mangaId"], evidence, outcome)
-                    actual_mime, size = await asyncio.to_thread(inspect_image, result)
-                    if (
-                        size != original_size
-                        or mime != actual_mime
-                        or outcome not in {"translated", "skipped"}
-                    ):
-                        raise ValueError("Worker returned an invalid translated page")
-                    if outcome == "skipped":
-                        result = data
-                        mime, _ = inspect_image(data)
-                    self.capacity(len(result))
-                    target = folder / f"{number:05d}.image"
-                    target.with_suffix(".part").write_bytes(result)
-                    target.with_suffix(".part").replace(target)
-                    self.db.execute(
-                        "INSERT OR REPLACE INTO pages VALUES (?,?,?,?,?,?,?,?)",
-                        (
-                            chapter_id,
-                            number,
-                            source_hash,
-                            digest(result),
-                            mime,
-                            outcome,
-                            regions,
-                            json.dumps(evidence),
-                        ),
-                    )
-                    self.db.commit()
-                self.update(chapter_id, completed=number + 1)
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                # Drain already submitted pages on pause, cancellation or failure. Every valid
+                # completion is checkpointed, including pages that finish out of order.
+                for task in done:
+                    try:
+                        task.result()
+                    except Exception as exc:
+                        failure = failure or exc
+                if failure:
+                    exhausted = True
+        finally:
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+        if self.get(chapter_id)["status"] == "cancelled":
+            return
+        if not self.bypass(chapter["mangaId"]):
+            if failure:
+                raise failure
+            if self.option("paused", False):
+                self.update(chapter_id, status="queued")
+                return
         if self.get(chapter_id)["status"] != "cancelled" and self.bypass(chapter["mangaId"]):
             await self.use_originals(chapter, folder)
             return
@@ -600,7 +652,7 @@ class ChapterManager:
 
     def remove(self, chapter_id):
         if self.active == chapter_id:
-            raise ValueError("Cancel the active chapter and wait for its current page first")
+            raise ValueError("Cancel the active chapter and wait for its active pages first")
         with self.db:
             self.db.execute("DELETE FROM pages WHERE chapter_id=?", (chapter_id,))
             self.db.execute("DELETE FROM original_pages WHERE chapter_id=?", (chapter_id,))

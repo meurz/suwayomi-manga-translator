@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0
+
+- Pipeline up to two pages through chapter scheduling, gateway admission and the worker. Cloud translation overlaps other pages while all local model stages remain serialized.
+- Isolate page contexts, language evidence and force flags while sharing upstream model weights; retain Chinese-book bypass and existing cache compatibility.
+- Checkpoint out-of-order completions, drain in-flight pages on pause/cancel/failure, and publish only complete ordered chapters. Set PAGE_CONCURRENCY=1 on both hosts for serial admission.
+- Add a reproducible uncached serial/pipeline benchmark and concurrency regression tests.
+
 ## 0.4.0
 
 - Remember Chinese manga after a complete chapter provides sufficient language evidence.

@@ -65,9 +65,8 @@ originals. This integration never overwrites or removes native chapter files.
 A chapter becomes ready only after every page is translated or validly skipped,
 checksummed, decoded, and included in a verified CBZ. Until then the default
 `chapters` mode returns originals without starting online inference. Chinese,
-uncertain and text-free pages retain their original bytes. Cancel finishes the
-current page and stops further translation; it does not cancel Suwayomi downloads.
-Pause also takes effect between pages. Successful pages survive retries/restarts.
+uncertain and text-free pages retain their original bytes. Cancel drains the in-flight pages and stops further translation; it does not cancel Suwayomi downloads.
+Pause also drains in-flight pages before stopping. Successful pages survive retries/restarts.
 Worker/network outages wait and retry every 60 seconds; other processing errors
 retry three times before requiring manual retry. The worker exits if a single
 inference exceeds 300 seconds (`WORKER_PAGE_TIMEOUT`); Docker's restart policy
@@ -75,6 +74,26 @@ recycles it, and chapter processing resumes from its last verified page. Direct
 non-Docker deployments must use a process supervisor for this recovery. A tunnel
 can still time out earlier; these pages remain pending instead of being published. Native download waits time out
 after 30 minutes, with a message to check Suwayomi's download queue.
+
+Page processing uses a bounded pipeline: while one page waits for cloud translation,
+the next can run detection and OCR. Up to two cloud requests may overlap. All local
+model stages (including mask generation, inpainting and rendering) remain under
+one exclusive lock, sharing upstream model weights. Each page owns a separate
+translator context, language evidence and force flag. Chapters still queue one at
+a time; completed pages can checkpoint out of order, but CBZ order stays unchanged.
+
+`PAGE_CONCURRENCY=2` is the default on **both gateway and worker**. Set it to `1`
+on both hosts and recreate the affected services to restore serial admission.
+Only 1 and 2 are supported to bound RAM, VRAM and cloud API load.
+The two hosts must use matching values; worker health reports its admission limit.
+A saturated worker returns 503, and chapter preparation retries instead of publishing originals
+as translations. Already submitted pages can finish after pause, cancel or a
+language-rule change; no new pages are submitted once the change is observed.
+Confirmed Chinese books bypass this pipeline entirely. Model, prompt and cache
+profile do not change with concurrency. This improves chapter throughput; it does
+not promise to halve individual page latency. A four-page ARM → Tunnel → GPU
+trial took 85.8 seconds serially and 42.4 seconds with two pages in flight; see
+[verification details](docs/verification.md#v050-page-pipeline) for scope and limitations.
 
 Chapter storage is durable and separate from the disposable page cache: default
 20 GiB total (`CHAPTER_MAX_BYTES`), without age eviction. Budget space for original
@@ -127,7 +146,7 @@ images when those original bytes are encountered by the reader.
 Management provides **Auto**, **Always process** (disable automatic book skipping),
 and **Original only** (manual override), plus **Reset detection** for a learned
 Chinese book. Reset retains past foreign-language observations; use Original only
-for an explicit override. Changes take effect after any current page finishes. Resetting makes
+for an explicit override. Changes take effect after in-flight pages finish. Resetting makes
 previously bypassed chapters available for manual preparation; it does not trigger
 an unexpected library-wide retranslation. Chinese regions remain preserved even
 with Always process. A later chapter can change language, so override/reset the
@@ -201,7 +220,7 @@ docker compose -f compose.gpu.yaml -f compose.wsl.yaml up -d
 cloudflared tunnel --url http://127.0.0.1:18442 --protocol quic
 ```
 
-The worker processes one page at a time and binds only to loopback. All routes
+The worker admits up to two pages and binds only to loopback. All routes
 except health require `X-Worker-Token`; do not remove this authentication when
 publishing a tunnel. Copy only the matching `WORKER_TOKEN` into the ARM gateway's
 `gateway.env`, using a protected channel. Keep both env files mode 0600.
@@ -335,7 +354,7 @@ docker compose ps
 curl http://127.0.0.1:18440/health
 ```
 
-Use chapter pause to stop background work after the current page. Prepared
+Use chapter pause to stop background work after in-flight pages finish. Prepared
 chapters remain served. Restore Suwayomi's old configuration to bypass all
 translation before shutting down the service. Do not remove `data/` or the
 Suwayomi library to uninstall this integration.
