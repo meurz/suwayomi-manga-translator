@@ -281,3 +281,8 @@ translated 14 regions in 16.662 seconds; the Chinese page returned exact origina
 bytes, zero translated regions, and independent Chinese evidence in 4.380 seconds.
 These direct worker requests bypassed caches. The established Chinese-book policy
 survived the gateway upgrade.
+
+With the actual GPU worker stopped, all six new prepared pages and three pages
+from the previously confirmed Chinese book remained readable through native
+Suwayomi. All nine responses matched their prepared/original archives exactly,
+with zero new model jobs. The worker was then restored.
