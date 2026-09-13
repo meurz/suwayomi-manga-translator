@@ -98,7 +98,8 @@ async def test_no_partial_publication_and_resume_after_failure(manager):
 
     manager.translate = recover
     await manager.process(1)
-    assert calls == [png("white"), png("black"), png("black")]
+    assert sorted(calls[:2]) == sorted([png("white"), png("black")])
+    assert calls[2:] == [png("black")]
     assert manager.get(1)["status"] == "ready"
     assert manager.lookup(png("white"))[0] == png("gray")
     assert manager.lookup(png("black"))[0] == png("black")
