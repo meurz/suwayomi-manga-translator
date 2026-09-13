@@ -91,6 +91,8 @@ async def test_prior_foreign_chapter_blocks_later_chinese_only_chapter(manager):
     await manager.process(2)
     assert not manager.bypass(2)
     assert manager.policy(2)["foreign_seen"]
+    manager.set_policy(2, "auto")
+    assert manager.policy(2)["foreign_seen"]
 
 
 async def test_manual_original_override_and_restore_preserve_ready_translation(manager):

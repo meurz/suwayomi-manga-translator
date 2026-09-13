@@ -162,7 +162,7 @@ class ChapterManager:
 
     def set_policy(self, manga_id, mode):
         self.db.execute(
-            "UPDATE manga_policies SET mode=?,detected='unknown',foreign_seen=0,"
+            "UPDATE manga_policies SET mode=?,detected='unknown',"
             "evidence='{}',updated=? WHERE manga_id=?",
             (mode, time.time(), manga_id),
         )

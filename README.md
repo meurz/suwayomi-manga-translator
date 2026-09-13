@@ -126,7 +126,8 @@ images when those original bytes are encountered by the reader.
 
 Management provides **Auto**, **Always process** (disable automatic book skipping),
 and **Original only** (manual override), plus **Reset detection** for a learned
-Chinese book. Changes take effect after any current page finishes. Resetting makes
+Chinese book. Reset retains past foreign-language observations; use Original only
+for an explicit override. Changes take effect after any current page finishes. Resetting makes
 previously bypassed chapters available for manual preparation; it does not trigger
 an unexpected library-wide retranslation. Chinese regions remain preserved even
 with Always process. A later chapter can change language, so override/reset the
